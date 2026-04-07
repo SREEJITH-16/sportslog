@@ -32,9 +32,9 @@ app.use(express.static(path.join(__dirname, '..', 'public')));
 const db = new Database(path.join(__dirname, 'sportlog.db'));
 console.log("Database connected");
 //db.pragma('journal_mode = WAL');
-db.pragma('foreign_keys = ON');
+db.run("PRAGMA foreign_keys = ON");
 
-db.run(`
+db.exec(`
   -- ── STUDENT ──────────────────────────────────────────
   CREATE TABLE IF NOT EXISTS STUDENT (
     student_id   INTEGER PRIMARY KEY AUTOINCREMENT,
