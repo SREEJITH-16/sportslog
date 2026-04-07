@@ -11,7 +11,7 @@
 
 'use strict';
 const express    = require('express');
-const Database   = require('better-sqlite3');
+const sqlite3 = require('sqlite3').verbose();;
 const bcrypt     = require('bcryptjs');
 const jwt        = require('jsonwebtoken');
 const cors       = require('cors');
@@ -29,11 +29,17 @@ app.use(express.static(path.join(__dirname, '..', 'public')));
 // ─────────────────────────────────────────────
 // DATABASE SETUP
 // ─────────────────────────────────────────────
-const db = new Database(path.join(__dirname, 'sportlog.db'));
+const db = new sqlite3.Database(path.join(__dirname, 'sportlog.db'), (err) => {
+  if (err) {
+    console.error("DB Error:", err);
+  } else {
+    console.log("Database connected");
+  }
+});
 //db.pragma('journal_mode = WAL');
 db.pragma('foreign_keys = ON');
 
-db.exec(`
+db.run(`
   -- ── STUDENT ──────────────────────────────────────────
   CREATE TABLE IF NOT EXISTS STUDENT (
     student_id   INTEGER PRIMARY KEY AUTOINCREMENT,
