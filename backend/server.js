@@ -30,7 +30,7 @@ app.use(express.static(path.join(__dirname, '..', 'public')));
 // DATABASE SETUP
 // ─────────────────────────────────────────────
 const db = new Database(path.join(__dirname, 'sportlog.db'));
-db.pragma('journal_mode = WAL');
+//db.pragma('journal_mode = WAL');
 db.pragma('foreign_keys = ON');
 
 db.exec(`
