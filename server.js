@@ -11,7 +11,7 @@
 
 'use strict';
 const express    = require('express');
-const Database = require('better-sqlite3');
+const { createClient } = require('@libsql/client');
 const bcrypt     = require('bcryptjs');
 const jwt        = require('jsonwebtoken');
 const cors       = require('cors');
@@ -27,73 +27,27 @@ app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
 // ─────────────────────────────────────────────
-// DATABASE SETUP
+// DATABASE SETUP — Turso / libSQL
 // ─────────────────────────────────────────────
-// Vercel deployments have a read-only filesystem except /tmp.
-// Keep SQLite in /tmp on Vercel; locally it stays beside server.js.
-// NOTE: /tmp is ephemeral on Vercel, so SQLite data is not durable across
-// cold starts/redeployments. Use a hosted database for production persistence.
-const DB_PATH = process.env.VERCEL
-  ? path.join('/tmp', 'sportlog.db')
-  : path.join(__dirname, 'sportlog.db');
+// Production (Vercel): set TURSO_DATABASE_URL and TURSO_AUTH_TOKEN.
+// Local development: falls back to the local SQLite file.
+const DB_URL = process.env.TURSO_DATABASE_URL || 'file:./sportlog.db';
+const db = createClient({ url: DB_URL, authToken: process.env.TURSO_AUTH_TOKEN || undefined });
 
-const db = new Database(DB_PATH);
-console.log("Database connected");
-//db.pragma('journal_mode = WAL');
-db.pragma('foreign_keys = ON');
-
-db.exec(`
-  -- ── STUDENT ──────────────────────────────────────────
-  CREATE TABLE IF NOT EXISTS STUDENT (
-    student_id   INTEGER PRIMARY KEY AUTOINCREMENT,
-    name         TEXT    NOT NULL,
-    reg_number   TEXT    NOT NULL UNIQUE,
-    email        TEXT    NOT NULL UNIQUE,
-    password     TEXT    NOT NULL,
-    created_at   TEXT    DEFAULT (datetime('now'))
-  );
-
-  -- ── SPORTS ───────────────────────────────────────────
-  CREATE TABLE IF NOT EXISTS SPORTS (
-    sport_id    INTEGER PRIMARY KEY AUTOINCREMENT,
-    sport_name  TEXT    NOT NULL UNIQUE,
-    emoji       TEXT    NOT NULL DEFAULT '🏅',
-    score_label TEXT    NOT NULL DEFAULT 'Score / Result'
-  );
-
-  -- ── EVENTS ───────────────────────────────────────────
-  CREATE TABLE IF NOT EXISTS EVENTS (
-    event_id   INTEGER PRIMARY KEY AUTOINCREMENT,
-    sport_id   INTEGER NOT NULL REFERENCES SPORTS(sport_id),
-    event_name TEXT    NOT NULL,
-    event_date TEXT,
-    location   TEXT,
-    level      TEXT    NOT NULL DEFAULT 'College Level'
-  );
-
-  -- ── ACTIVITY_LOG ─────────────────────────────────────
-  CREATE TABLE IF NOT EXISTS ACTIVITY_LOG (
-    log_id      INTEGER PRIMARY KEY AUTOINCREMENT,
-    student_id  INTEGER NOT NULL REFERENCES STUDENT(student_id),
-    sport_id    INTEGER NOT NULL REFERENCES SPORTS(sport_id),
-    event_id    INTEGER NOT NULL REFERENCES EVENTS(event_id),
-    class       TEXT,
-    category    TEXT    DEFAULT 'Individual',
-    description TEXT,
-    created_at  TEXT    DEFAULT (datetime('now'))
-  );
-
-  -- ── PERFORMANCE ──────────────────────────────────────
-  CREATE TABLE IF NOT EXISTS PERFORMANCE (
-    perf_id    INTEGER PRIMARY KEY AUTOINCREMENT,
-    log_id     INTEGER NOT NULL UNIQUE REFERENCES ACTIVITY_LOG(log_id),
-    achievement TEXT   NOT NULL,
-    score      TEXT,
-    rank       INTEGER,
-    medal_won  TEXT    DEFAULT 'None',
-    position   TEXT
-  );
-`);
+async function initDb() {
+  await db.batch([
+    { sql: `CREATE TABLE IF NOT EXISTS STUDENT (student_id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, reg_number TEXT NOT NULL UNIQUE, email TEXT NOT NULL UNIQUE, password TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')))`, args: [] },
+    { sql: `CREATE TABLE IF NOT EXISTS SPORTS (sport_id INTEGER PRIMARY KEY AUTOINCREMENT, sport_name TEXT NOT NULL UNIQUE, emoji TEXT NOT NULL DEFAULT '🏅', score_label TEXT NOT NULL DEFAULT 'Score / Result')`, args: [] },
+    { sql: `CREATE TABLE IF NOT EXISTS EVENTS (event_id INTEGER PRIMARY KEY AUTOINCREMENT, sport_id INTEGER NOT NULL REFERENCES SPORTS(sport_id), event_name TEXT NOT NULL, event_date TEXT, location TEXT, level TEXT NOT NULL DEFAULT 'College Level')`, args: [] },
+    { sql: `CREATE TABLE IF NOT EXISTS ACTIVITY_LOG (log_id INTEGER PRIMARY KEY AUTOINCREMENT, student_id INTEGER NOT NULL REFERENCES STUDENT(student_id), sport_id INTEGER NOT NULL REFERENCES SPORTS(sport_id), event_id INTEGER NOT NULL REFERENCES EVENTS(event_id), class TEXT, category TEXT DEFAULT 'Individual', description TEXT, created_at TEXT DEFAULT (datetime('now')))`, args: [] },
+    { sql: `CREATE TABLE IF NOT EXISTS PERFORMANCE (perf_id INTEGER PRIMARY KEY AUTOINCREMENT, log_id INTEGER NOT NULL UNIQUE REFERENCES ACTIVITY_LOG(log_id), achievement TEXT NOT NULL, score TEXT, rank INTEGER, medal_won TEXT DEFAULT 'None', position TEXT)`, args: [] }
+  ]);
+}
+const dbReady = initDb();
+async function query(sql, args=[]) { await dbReady; return db.execute({sql, args}); }
+async function get(sql, ...args) { const r=await query(sql,args); return r.rows[0]; }
+async function all(sql, ...args) { const r=await query(sql,args); return r.rows; }
+async function run(sql, ...args) { return query(sql,args); }
 
 // Seed sports catalogue once
 const sportsSeed = [
@@ -108,8 +62,11 @@ const sportsSeed = [
   { sport_name:'Volleyball', emoji:'🏐', score_label:'Sets Won / Points' },
   { sport_name:'Hockey',     emoji:'🏑', score_label:'Goals Scored / Saves' },
 ];
-const insertSport = db.prepare(`INSERT OR IGNORE INTO SPORTS (sport_name,emoji,score_label) VALUES (?,?,?)`);
-for (const s of sportsSeed) insertSport.run(s.sport_name, s.emoji, s.score_label);
+const seedSports = async () => {
+  await dbReady;
+  for (const s of sportsSeed) await run(`INSERT OR IGNORE INTO SPORTS (sport_name,emoji,score_label) VALUES (?,?,?)`, s.sport_name, s.emoji, s.score_label);
+};
+const seedReady = seedSports();
 
 // ─────────────────────────────────────────────
 // AUTH MIDDLEWARE
@@ -128,8 +85,8 @@ function authRequired(req, res, next) {
 // ─────────────────────────────────────────────
 // HELPERS
 // ─────────────────────────────────────────────
-function sportIdByName(name) {
-  return db.prepare('SELECT sport_id FROM SPORTS WHERE sport_name=?').get(name)?.sport_id;
+async function sportIdByName(name) {
+  await seedReady; const row=await get('SELECT sport_id FROM SPORTS WHERE sport_name=?',name); return row?.sport_id;
 }
 
 // ─────────────────────────────────────────────
@@ -137,7 +94,7 @@ function sportIdByName(name) {
 // ─────────────────────────────────────────────
 
 /** POST /api/auth/signup */
-app.post('/api/auth/signup', (req, res) => {
+app.post('/api/auth/signup', async (req, res) => {
   const { name, reg_number, email, password, confirm_password } = req.body || {};
   if (!name || !reg_number || !email || !password || !confirm_password)
     return res.json({ success:false, error:'All fields are required' });
@@ -154,13 +111,11 @@ app.post('/api/auth/signup', (req, res) => {
   if (password !== confirm_password)
     return res.json({ success:false, error:'Passwords do not match' });
 
-  const existing = db.prepare('SELECT student_id FROM STUDENT WHERE reg_number=? OR email=?')
-    .get(reg_number, email.toLowerCase());
+  const existing = await get('SELECT student_id FROM STUDENT WHERE reg_number=? OR email=?', reg_number, email.toLowerCase());
   if (existing) return res.json({ success:false, error:'Registration number or email already registered' });
 
   const hash = bcrypt.hashSync(password, 10);
-  const info = db.prepare('INSERT INTO STUDENT (name,reg_number,email,password) VALUES (?,?,?,?)')
-    .run(name, reg_number.toUpperCase(), email.toLowerCase(), hash);
+  const info = await run('INSERT INTO STUDENT (name,reg_number,email,password) VALUES (?,?,?,?)', name, reg_number.toUpperCase(), email.toLowerCase(), hash);
 
   const user = { student_id: info.lastInsertRowid, name, reg_number: reg_number.toUpperCase(), email: email.toLowerCase() };
   const token = jwt.sign(user, SECRET, { expiresIn:'7d' });
@@ -168,12 +123,12 @@ app.post('/api/auth/signup', (req, res) => {
 });
 
 /** POST /api/auth/login */
-app.post('/api/auth/login', (req, res) => {
+app.post('/api/auth/login', async (req, res) => {
   const { reg_number, password } = req.body || {};
   if (!reg_number || !password)
     return res.json({ success:false, error:'Registration number and password are required' });
 
-  const row = db.prepare('SELECT * FROM STUDENT WHERE reg_number=?').get(reg_number.toUpperCase());
+  const row = await get('SELECT * FROM STUDENT WHERE reg_number=?', reg_number.toUpperCase());
   if (!row || !bcrypt.compareSync(password, row.password))
     return res.json({ success:false, error:'Invalid registration number or password' });
 
@@ -183,7 +138,7 @@ app.post('/api/auth/login', (req, res) => {
 });
 
 /** GET /api/auth/me */
-app.get('/api/auth/me', authRequired, (req, res) => {
+app.get('/api/auth/me', authRequired, async (req, res) => {
   const u = req.user;
   res.json({ success:true, user:{ student_id: u.student_id, name: u.name, reg_number: u.reg_number, email: u.email } });
 });
@@ -193,8 +148,9 @@ app.get('/api/auth/me', authRequired, (req, res) => {
 // ─────────────────────────────────────────────
 
 /** GET /api/sports */
-app.get('/api/sports', (_req, res) => {
-  const rows = db.prepare('SELECT * FROM SPORTS ORDER BY sport_name').all();
+app.get('/api/sports', async (_req, res) => {
+  await seedReady;
+  const rows = await all('SELECT * FROM SPORTS ORDER BY sport_name');
   res.json({ success:true, data: rows });
 });
 
@@ -209,7 +165,7 @@ app.get('/api/sports', (_req, res) => {
  *
  * Implements Query 1 pattern — join all 5 tables.
  */
-app.get('/api/achievements', (_req, res) => {
+app.get('/api/achievements', async (_req, res) => {
   const { student_name, sport, level, class: cls } = _req.query;
 
   let sql = `
@@ -250,7 +206,7 @@ app.get('/api/achievements', (_req, res) => {
 
   sql += ` ORDER BY al.log_id DESC`;
 
-  const rows = db.prepare(sql).all(...params);
+  const rows = await all(sql, ...params);
   res.json({ success:true, count: rows.length, data: rows });
 });
 
@@ -258,7 +214,7 @@ app.get('/api/achievements', (_req, res) => {
  * POST /api/achievements
  * Inserts into EVENTS → ACTIVITY_LOG → PERFORMANCE (transactional)
  */
-app.post('/api/achievements', authRequired, (req, res) => {
+app.post('/api/achievements', authRequired, async (req, res) => {
   const {
     student_name, roll_number, class: cls,
     sport, category, level,
@@ -275,54 +231,33 @@ app.post('/api/achievements', authRequired, (req, res) => {
   if (!sid) return res.json({ success:false, error:'Unknown sport: ' + sport });
 
   // Find or create STUDENT record (anyone can log for any student)
-  let studentRow = db.prepare('SELECT student_id FROM STUDENT WHERE reg_number=?').get(roll_number.toUpperCase());
+  let studentRow = await get('SELECT student_id FROM STUDENT WHERE reg_number=?', roll_number.toUpperCase());
   if (!studentRow) {
     // Create a placeholder student (no login credentials)
-    const info = db.prepare('INSERT OR IGNORE INTO STUDENT (name,reg_number,email,password) VALUES (?,?,?,?)')
-      .run(student_name, roll_number.toUpperCase(), `${roll_number.toLowerCase()}@srmist.edu.in`, 'nologin');
-    studentRow = { student_id: info.lastInsertRowid || db.prepare('SELECT student_id FROM STUDENT WHERE reg_number=?').get(roll_number.toUpperCase()).student_id };
+    const info = await run('INSERT OR IGNORE INTO STUDENT (name,reg_number,email,password) VALUES (?,?,?,?)', student_name, roll_number.toUpperCase(), `${roll_number.toLowerCase()}@srmist.edu.in`, 'nologin');
+    const fallback = await get('SELECT student_id FROM STUDENT WHERE reg_number=?', roll_number.toUpperCase());
+    studentRow = { student_id: Number(info.lastInsertRowid || fallback.student_id) };
   }
 
-  const txn = db.transaction(() => {
-    // 1. Insert EVENTS row
-    const evInfo = db.prepare(`
-      INSERT INTO EVENTS (sport_id, event_name, event_date, location, level)
-      VALUES (?,?,?,?,?)
-    `).run(sid, event_name || 'Unnamed Event', event_date || null, location || null, level);
-
-    // 2. Insert ACTIVITY_LOG row
-    const alInfo = db.prepare(`
-      INSERT INTO ACTIVITY_LOG (student_id, sport_id, event_id, class, category, description)
-      VALUES (?,?,?,?,?,?)
-    `).run(studentRow.student_id, sid, evInfo.lastInsertRowid, cls, category, description || null);
-
-    // 3. Insert PERFORMANCE row
-    db.prepare(`
-      INSERT INTO PERFORMANCE (log_id, achievement, score, rank, medal_won, position)
-      VALUES (?,?,?,?,?,?)
-    `).run(alInfo.lastInsertRowid, achievement, score || null, null, medal_won || 'None', position || null);
-
-    return alInfo.lastInsertRowid;
-  });
-
-  const logId = txn();
+  const evInfo = await run(`INSERT INTO EVENTS (sport_id, event_name, event_date, location, level) VALUES (?,?,?,?,?)`, sid, event_name || 'Unnamed Event', event_date || null, location || null, level);
+  const alInfo = await run(`INSERT INTO ACTIVITY_LOG (student_id, sport_id, event_id, class, category, description) VALUES (?,?,?,?,?,?)`, studentRow.student_id, sid, evInfo.lastInsertRowid, cls, category, description || null);
+  await run(`INSERT INTO PERFORMANCE (log_id, achievement, score, rank, medal_won, position) VALUES (?,?,?,?,?,?)`, alInfo.lastInsertRowid, achievement, score || null, null, medal_won || 'None', position || null);
+  const logId = Number(alInfo.lastInsertRowid);
   res.json({ success:true, message:'Achievement recorded!', data:{ log_id: logId } });
 });
 
 /**
  * DELETE /api/achievements/:id   (log_id)
  */
-app.delete('/api/achievements/:id', authRequired, (req, res) => {
+app.delete('/api/achievements/:id', authRequired, async (req, res) => {
   const id = Number(req.params.id);
   if (!id) return res.json({ success:false, error:'Invalid ID' });
 
-  const row = db.prepare('SELECT log_id FROM ACTIVITY_LOG WHERE log_id=?').get(id);
+  const row = await get('SELECT log_id FROM ACTIVITY_LOG WHERE log_id=?', id);
   if (!row) return res.json({ success:false, error:'Achievement not found' });
 
-  db.transaction(() => {
-    db.prepare('DELETE FROM PERFORMANCE   WHERE log_id=?').run(id);
-    db.prepare('DELETE FROM ACTIVITY_LOG  WHERE log_id=?').run(id);
-  })();
+  await run('DELETE FROM PERFORMANCE WHERE log_id=?', id);
+  await run('DELETE FROM ACTIVITY_LOG WHERE log_id=?', id);
   res.json({ success:true, message:'Deleted' });
 });
 
@@ -331,16 +266,16 @@ app.delete('/api/achievements/:id', authRequired, (req, res) => {
 // ─────────────────────────────────────────────
 
 /** GET /api/stats */
-app.get('/api/stats', (_req, res) => {
+app.get('/api/stats', async (_req, res) => {
   // Total achievements & unique athletes (Query 2 basis)
-  const totals = db.prepare(`
+  const totals = await get(`
     SELECT COUNT(al.log_id) AS totalAchievements,
            COUNT(DISTINCT al.student_id) AS totalStudents
     FROM ACTIVITY_LOG al
-  `).get();
+  `);
 
   // Query 5 — avg score per sport
-  const bySport = db.prepare(`
+  const bySport = (await all(`
     SELECT sp.sport_name AS sport, sp.emoji,
            COUNT(DISTINCT al.student_id) AS participants,
            COUNT(al.log_id) AS cnt
@@ -348,19 +283,19 @@ app.get('/api/stats', (_req, res) => {
     JOIN SPORTS sp ON al.sport_id = sp.sport_id
     GROUP BY sp.sport_id
     ORDER BY cnt DESC
-  `).all().map(r => ({ sport: r.sport, emoji: r.emoji, count: r.cnt, participants: r.participants }));
+  `)).map(r => ({ sport: r.sport, emoji: r.emoji, count: r.cnt, participants: r.participants }));
 
   // Achievements by level
-  const byLevel = db.prepare(`
+  const byLevel = (await all(`
     SELECT e.level, COUNT(al.log_id) AS cnt
     FROM ACTIVITY_LOG al
     JOIN EVENTS e ON al.event_id = e.event_id
     GROUP BY e.level
     ORDER BY cnt DESC
-  `).all().map(r => ({ level: r.level, count: r.cnt }));
+  `)).map(r => ({ level: r.level, count: r.cnt }));
 
   // Query 3 — recent gold medal winners (top 5)
-  const recentWinners = db.prepare(`
+  const recentWinners = await all(`
     SELECT st.name AS student_name,
            sp.sport_name AS sport,
            sp.emoji,
@@ -376,10 +311,10 @@ app.get('/api/stats', (_req, res) => {
     WHERE p.medal_won NOT IN ('None','') AND p.medal_won IS NOT NULL
     ORDER BY al.created_at DESC
     LIMIT 5
-  `).all();
+  `);
 
   // Query 2 — top students by achievement count
-  const topStudents = db.prepare(`
+  const topStudents = await all(`
     SELECT st.name, st.reg_number,
            COUNT(al.log_id) AS total_achievements
     FROM STUDENT st
@@ -387,16 +322,16 @@ app.get('/api/stats', (_req, res) => {
     GROUP BY st.student_id, st.name
     ORDER BY total_achievements DESC
     LIMIT 10
-  `).all();
+  `);
 
   // Query 6 — students who never won a medal
-  const noMedalStudents = db.prepare(`
+  const noMedalStudents = await all(`
     SELECT DISTINCT st.name, st.email
     FROM STUDENT st
     JOIN ACTIVITY_LOG al ON st.student_id = al.student_id
     JOIN PERFORMANCE p  ON al.log_id = p.log_id
     WHERE p.medal_won = 'None' OR p.medal_won IS NULL
-  `).all();
+  `);
 
   res.json({
     success: true,
@@ -416,7 +351,7 @@ app.get('/api/stats', (_req, res) => {
 // LOCATION QUERY (Query 4)
 // GET /api/events?location=Chennai
 // ─────────────────────────────────────────────
-app.get('/api/events', (_req, res) => {
+app.get('/api/events', async (_req, res) => {
   const { location } = _req.query;
   let sql = `
     SELECT e.event_name, e.event_date, e.location, e.level,
@@ -429,7 +364,7 @@ app.get('/api/events', (_req, res) => {
   if (location) { sql += ` AND LOWER(e.location) LIKE ?`; params.push(`%${location.toLowerCase()}%`); }
   sql += ` ORDER BY e.event_date DESC`;
 
-  const rows = db.prepare(sql).all(...params);
+  const rows = await all(sql, ...params);
   res.json({ success:true, count: rows.length, data: rows });
 });
 
@@ -437,9 +372,9 @@ app.get('/api/events', (_req, res) => {
 // STUDENT PROFILE (Query 1 — by student)
 // GET /api/students/:id/achievements
 // ─────────────────────────────────────────────
-app.get('/api/students/:id/achievements', (_req, res) => {
+app.get('/api/students/:id/achievements', async (_req, res) => {
   const studentId = Number(_req.params.id);
-  const rows = db.prepare(`
+  const rows = await all(`
     SELECT al.log_id, sp.sport_name, sp.emoji,
            e.event_name, e.event_date, e.location, e.level,
            al.description, al.category, al.class,

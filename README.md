@@ -137,3 +137,7 @@ The live demo is deployed on **Render** as a free Web Service:
 
 
 <img src="https://capsule-render.vercel.app/api?type=waving&color=0:2a5298,100:1e3c72&height=100&section=footer" width="100%"/>
+
+
+## Database
+Production uses Turso/libSQL. Set `TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN`, and `JWT_SECRET` in Vercel. Local development falls back to `sportlog.db`, which remains compatible with DB Browser for SQLite.
