@@ -227,7 +227,7 @@ app.post('/api/achievements', authRequired, async (req, res) => {
   const missing  = Object.entries(required).filter(([,v]) => !v).map(([k]) => k.replace(/_/g,' '));
   if (missing.length) return res.json({ success:false, error:`Missing: ${missing.join(', ')}` });
 
-  const sid = sportIdByName(sport);
+  const sid = await sportIdByName(sport);
   if (!sid) return res.json({ success:false, error:'Unknown sport: ' + sport });
 
   // Find or create STUDENT record (anyone can log for any student)
