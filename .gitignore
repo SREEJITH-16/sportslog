@@ -1,0 +1,8 @@
+node_modules/
+sportlog.db
+sportlog.db-shm
+sportlog.db-wal
+
+.env
+.env.*
+!.env.example
