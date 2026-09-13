@@ -776,15 +776,23 @@ function goto(id) {
 
 // ── API helper ──
 async function apiFetch(path, opts = {}) {
-  const headers = { 'Content-Type': 'application/json' };
-  if (authToken) headers['Authorization'] = 'Bearer ' + authToken;
+  const headers = {
+    'Content-Type': 'application/json'
+  };
 
-  if (API.startsWith('http')) {
-    const r = await fetch(API + path, { ...opts, headers: { ...headers, ...(opts.headers || {}) } });
-    return r.json();
+  if (authToken) {
+    headers['Authorization'] = 'Bearer ' + authToken;
   }
 
-  return mockApi(path, { ...opts, headers: { ...headers, ...(opts.headers || {}) } });
+  const r = await fetch(API + path, {
+    ...opts,
+    headers: {
+      ...headers,
+      ...(opts.headers || {})
+    }
+  });
+
+  return r.json();
 }
 
 function mockApi(path, opts = {}) {
